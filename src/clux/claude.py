@@ -13,7 +13,7 @@ def get_claude_projects_dir() -> Path:
 def path_to_project_dir_name(working_directory: str) -> str:
     """Convert a working directory path to Claude's project directory name.
 
-    Claude uses a format like: -home-zack-work-vita
+    Claude uses a format like: -home-user-work-myproject
     which is the path with slashes replaced by dashes.
     """
     # Normalize the path
