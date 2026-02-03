@@ -1,16 +1,16 @@
 # clux
 
-tmux-native session management for Claude Code.
+fast session switching for Claude Code, with an API for external integrations.
 
 ![clux TUI](assets/screenshot.png)
 
-sessions grouped by project directory. live preview of the selected session. keyboard-driven: `n` to create, `enter` to attach, `a` to archive, `d` to delete.
+## why
 
-## the problem
+you're working on multiple projects. each has its own Claude session with accumulated context. switching between them means finding session IDs, remembering which belongs where, manually resuming. clux eliminates that friction.
 
-Claude Code sessions are ephemeral by default. you interact, close the terminal, context is gone. Claude has `--resume` to bring sessions back, but you need the session ID, and you need to track which session belongs to which project. this gets tedious.
+`clux` in one terminal. arrow to the project you need. enter. you're there with full context restored.
 
-clux treats Claude sessions as first-class persistent entities - like tmux treats terminal sessions. create a session, work on it, detach, come back later. the session survives terminal death because clux captures the Claude session ID and stores it.
+for automation, `clux list --json` and `clux prompt` let you build integrations - telegram bots, editor plugins, CI pipelines - anything that needs to talk to a Claude session programmatically.
 
 ## install
 
@@ -23,27 +23,69 @@ ln -sf $(pwd)/.venv/bin/clux ~/.local/bin/clux
 
 requires: python 3.12+, tmux, claude cli
 
-## usage
+## quick start
 
 ```bash
-clux                      # open TUI (default)
-clux new api              # create session, launch claude, attach
-clux attach api           # resume session (handles tmux death gracefully)
-clux list                 # show sessions
-clux archive api          # hide without deleting
-clux delete api           # permanent removal
+clux                      # TUI - browse and switch sessions
+clux new api              # create session in current directory
+clux attach api           # resume session (survives terminal death)
 ```
 
-single-letter aliases: `clux n`, `clux a`, `clux l`, `clux d`, `clux s`
+keybindings: `n` new, `enter` attach, `a` archive, `d` delete, `q` quit
 
-### non-interactive
+## API for integrations
+
+### list sessions
 
 ```bash
-clux prompt api "analyze the error in src/main.rs"
-clux p api "what files did you modify?" --json
+clux list --json
 ```
 
-useful for automation, piping output, or integration with other tools.
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "api",
+    "working_directory": "/home/user/work/myproject",
+    "status": "idle",
+    "claude_session_id": "a1b2c3d4-...",
+    "last_activity": "2026-02-01T14:30:00"
+  }
+]
+```
+
+### send prompts programmatically
+
+```bash
+clux prompt api "what files did you modify?"
+clux prompt api "run the tests" --json    # raw NDJSON output
+clux prompt api "deploy" --dir ~/work/api  # specify directory
+```
+
+returns exit code 0 on success, streams response to stdout. `--json` gives raw NDJSON for parsing cost, session ID, tool use events.
+
+### example: telegram bot integration
+
+```python
+import subprocess
+import json
+
+def get_sessions():
+    result = subprocess.run(["clux", "list", "--json"], capture_output=True, text=True)
+    return json.loads(result.stdout) if result.returncode == 0 else []
+
+def send_to_session(name, directory, message):
+    result = subprocess.run(
+        ["clux", "prompt", name, message, "--dir", directory],
+        capture_output=True, text=True, timeout=900
+    )
+    return result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
+
+# telegram handler
+sessions = get_sessions()
+# show inline keyboard picker...
+# on selection, route messages through send_to_session()
+```
 
 ## how it works
 
@@ -63,80 +105,34 @@ later:
   ↓
   if tmux still alive → attach directly
   if tmux dead but ID exists → spawn new tmux + claude --resume <id>
-  if neither → fresh claude session
 ```
 
-sessions are scoped to directories. you can have "api" in both `~/work/vita` and `~/work/rwgps` without collision.
+sessions are scoped to directories. "api" in `~/work/foo` and "api" in `~/work/bar` are separate.
 
-## TUI keybindings
+## session states
 
-| key | action |
-|-----|--------|
-| `n` | new session |
-| `enter` / `o` | attach to selected |
-| `a` | archive |
-| `u` | unarchive |
-| `d` | delete (with confirmation) |
-| `r` | refresh |
-| `s` | toggle show archived |
-| `tab` | navigate between directories |
-| `q` | quit |
-
-status indicators in the sidebar:
-- `●` green = active (tmux attached)
-- `○` yellow = detached (tmux alive, not attached)
-- `○` white = idle (tmux dead, but claude session ID preserved for resumption)
-- `◌` dim = archived
+| status | meaning |
+|--------|---------|
+| `active` | tmux running, attached |
+| `detached` | tmux running, not attached |
+| `idle` | tmux dead, but claude session ID preserved |
+| `archived` | hidden from default views |
 
 ## config
 
 `~/.config/clux/config.toml`:
 
 ```toml
-yolo_mode = true          # adds --dangerously-skip-permissions to claude
-claude_command = "claude" # custom claude binary path
+yolo_mode = true          # --dangerously-skip-permissions by default
+claude_command = "claude" # custom binary path
 ```
-
-yolo mode is on by default. pass `--safe` to any command to disable for that invocation.
 
 ## data
 
-- **registry:** `~/.local/share/clux/sessions.db` (SQLite with WAL mode)
-- **claude sessions:** `~/.claude/projects/` (Claude's native storage)
+- **registry:** `~/.local/share/clux/sessions.db`
+- **claude sessions:** `~/.claude/projects/`
 
-clux doesn't store conversation content - it just tracks the mapping between your named sessions and Claude's internal session IDs.
-
-## session lifecycle
-
-| status | meaning | what attach does |
-|--------|---------|------------------|
-| active | tmux alive, attached | switch to it |
-| detached | tmux alive, not attached | attach to tmux |
-| idle | tmux dead, claude ID exists | spawn tmux + `claude --resume` |
-| archived | hidden from default views | restore first, then attach |
-
-## integration
-
-`clux list --json` outputs session data for external tools:
-
-```json
-[
-  {
-    "name": "api",
-    "directory": "/home/user/work/myproject",
-    "status": "idle",
-    "claude_session_id": "a1b2c3d4-...",
-    "last_activity": "2026-02-01T14:30:00"
-  }
-]
-```
-
-## limitations
-
-- one session per (name, directory) pair
-- session ID capture depends on Claude's file structure
-- non-interactive prompt kills any existing tmux process in the session (by design)
-- Linux/macOS only (tmux dependency)
+clux tracks the mapping between named sessions and Claude's internal session IDs. no conversation content stored.
 
 ## license
 
