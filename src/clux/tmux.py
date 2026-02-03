@@ -173,15 +173,21 @@ def kill_session(name: str) -> bool:
 
 
 def get_pane_content(session_name: str, lines: int = 50) -> str:
-    """Capture content from a tmux pane."""
+    """Capture content from a tmux pane, showing the most recent output.
+
+    Captures the full scrollback + visible area, then returns the last N lines.
+    """
     try:
+        # Capture entire scrollback history (-S -) plus visible pane (-E -)
         result = subprocess.run(
-            ["tmux", "capture-pane", "-t", session_name, "-p", "-S", f"-{lines}"],
+            ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-", "-E", "-"],
             capture_output=True,
             text=True,
         )
         if result.returncode == 0:
-            return result.stdout
+            # Return the last N lines (most recent output)
+            all_lines = result.stdout.rstrip("\n").split("\n")
+            return "\n".join(all_lines[-lines:])
         logger.debug(f"Failed to capture pane content: {result.stderr}")
         return ""
     except Exception as e:
