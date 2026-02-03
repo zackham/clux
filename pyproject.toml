@@ -19,6 +19,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: User Interfaces",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zackham/clux"
+Repository = "https://github.com/zackham/clux"
+
 dependencies = [
     "click>=8.1",
     "textual>=3.0",
