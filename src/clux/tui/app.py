@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
-from ..db import Session, SessionDB, validate_session_name
+from ..db import Session, SessionDB, validate_session_name, make_tmux_name
 from .. import tmux
 from ..config import Config
 
@@ -442,7 +442,7 @@ class CluxApp(App):
             self.notify(f"Session '{name}' already exists", severity="error")
             return
 
-        tmux_name = f"clux-{name}"
+        tmux_name = make_tmux_name(name, self.cwd)
 
         if tmux.session_exists(tmux_name):
             tmux.kill_session(tmux_name)
@@ -471,7 +471,7 @@ class CluxApp(App):
             self.db.update_status(session.id, "active")
             self.exit(result=("attach", session.tmux_session))
         elif session.claude_session_id:
-            tmux_name = session.tmux_session or f"clux-{session.name}"
+            tmux_name = session.tmux_session or make_tmux_name(session.name, session.working_directory)
 
             if not tmux.create_session(tmux_name, session.working_directory):
                 self.notify("Failed to create tmux session", severity="error")
@@ -484,7 +484,7 @@ class CluxApp(App):
             self.db.update_status(session.id, "active")
             self.exit(result=("attach", tmux_name))
         else:
-            tmux_name = session.tmux_session or f"clux-{session.name}"
+            tmux_name = session.tmux_session or make_tmux_name(session.name, session.working_directory)
 
             if not tmux.create_session(tmux_name, session.working_directory):
                 self.notify("Failed to create tmux session", severity="error")

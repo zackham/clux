@@ -11,7 +11,7 @@ import click
 from . import claude
 from . import tmux
 from .config import Config
-from .db import Session, SessionDB, validate_session_name
+from .db import Session, SessionDB, validate_session_name, make_tmux_name
 
 
 def get_cwd() -> str:
@@ -91,8 +91,8 @@ def new_cmd(name: str, safe: bool) -> None:
         click.echo(f"Use 'clux attach {name}' to resume it.", err=True)
         sys.exit(1)
 
-    # Create tmux session name
-    tmux_name = f"clux-{name}"
+    # Create tmux session name (includes dir hash for uniqueness)
+    tmux_name = make_tmux_name(name, cwd)
 
     # Check if tmux session already exists (orphaned)
     if tmux.session_exists(tmux_name):
@@ -225,7 +225,7 @@ def attach_cmd(name: str, safe: bool) -> None:
     elif session.claude_session_id:
         # Resume with --resume
         click.echo(f"Resuming Claude session: {session.claude_session_id[:8]}...")
-        tmux_name = session.tmux_session or f"clux-{name}"
+        tmux_name = session.tmux_session or make_tmux_name(name, session.working_directory)
 
         if not tmux.create_session(tmux_name, session.working_directory):
             click.echo("Failed to create tmux session", err=True)
@@ -240,7 +240,7 @@ def attach_cmd(name: str, safe: bool) -> None:
     else:
         # No way to resume, start fresh
         click.echo(f"No Claude session to resume. Starting fresh.")
-        tmux_name = session.tmux_session or f"clux-{name}"
+        tmux_name = session.tmux_session or make_tmux_name(name, session.working_directory)
 
         if not tmux.create_session(tmux_name, session.working_directory):
             click.echo("Failed to create tmux session", err=True)

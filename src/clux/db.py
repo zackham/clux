@@ -36,6 +36,17 @@ def validate_session_name(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def make_tmux_name(session_name: str, working_directory: str) -> str:
+    """Generate a unique tmux session name from session name + directory.
+
+    Includes a short hash of the directory to avoid collisions when the same
+    session name is used in different directories.
+    """
+    import hashlib
+    dir_hash = hashlib.md5(working_directory.encode()).hexdigest()[:6]
+    return f"clux-{session_name}-{dir_hash}"
+
+
 def get_db_path() -> Path:
     """Get database path following XDG spec."""
     import os
