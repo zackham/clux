@@ -1,0 +1,458 @@
+"""CLI interface for clux."""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import click
+
+from . import claude
+from . import tmux
+from .config import Config
+from .db import Session, SessionDB, validate_session_name
+
+
+def get_cwd() -> str:
+    """Get current working directory as string."""
+    return str(Path.cwd().resolve())
+
+
+def format_session_line(session: Session) -> str:
+    """Format a session for display."""
+    status_icon = {
+        "active": click.style("●", fg="green"),
+        "detached": click.style("○", fg="yellow"),
+        "idle": click.style("○", fg="white"),
+        "archived": click.style("◌", fg="bright_black"),
+    }.get(session.status, "?")
+
+    name = click.style(session.name, bold=True)
+    age = click.style(session.age, fg="bright_black")
+    status = click.style(session.status, fg="cyan")
+
+    # Show resume indicator if session has a Claude session ID
+    resume_indicator = ""
+    if session.claude_session_id:
+        resume_indicator = click.style(" ↺", fg="blue")
+
+    return f"  {status_icon} {name:<20} {age:<12} {status}{resume_indicator}"
+
+
+def sync_session_status(db: SessionDB, session: Session) -> Session:
+    """Sync session status with actual tmux state."""
+    if session.tmux_session:
+        if tmux.session_exists(session.tmux_session):
+            if tmux.is_attached(session.tmux_session):
+                new_status = "active"
+            else:
+                new_status = "detached"
+        else:
+            new_status = "idle"
+
+        if new_status != session.status and session.status != "archived":
+            db.update_status(session.id, new_status)
+            session.status = new_status
+
+    return session
+
+
+@click.group(invoke_without_command=True)
+@click.pass_context
+def main(ctx: click.Context) -> None:
+    """clux - Claude Code session manager."""
+    if ctx.invoked_subcommand is None:
+        # Default: launch TUI
+        from .tui import CluxApp
+        from .tui.app import run_tui
+        run_tui()
+
+
+@main.command("new")
+@click.argument("name")
+@click.option("--safe", is_flag=True, help="Disable YOLO mode for this session")
+def new_cmd(name: str, safe: bool) -> None:
+    """Create a new Claude session."""
+    # Validate session name
+    is_valid, error = validate_session_name(name)
+    if not is_valid:
+        click.echo(f"Invalid session name: {error}", err=True)
+        sys.exit(1)
+
+    db = SessionDB()
+    config = Config.load()
+    cwd = get_cwd()
+
+    # Check if session already exists
+    existing = db.get_session(name, cwd)
+    if existing:
+        click.echo(f"Session '{name}' already exists in this directory.", err=True)
+        click.echo(f"Use 'clux attach {name}' to resume it.", err=True)
+        sys.exit(1)
+
+    # Create tmux session name
+    tmux_name = f"clux-{name}"
+
+    # Check if tmux session already exists (orphaned)
+    if tmux.session_exists(tmux_name):
+        click.echo(f"tmux session '{tmux_name}' already exists. Killing it.", err=True)
+        tmux.kill_session(tmux_name)
+
+    # Create database record
+    session = db.create_session(name, cwd, tmux_name)
+    click.echo(f"Created session: {name}")
+
+    # Create tmux session
+    if not tmux.create_session(tmux_name, cwd):
+        click.echo("Failed to create tmux session", err=True)
+        db.delete_session(session.id)
+        sys.exit(1)
+
+    # Record time before launching Claude (for session detection)
+    launch_time = time.time()
+
+    # Send claude command
+    claude_cmd = " ".join(config.get_claude_command(safe=safe))
+    tmux.send_keys(tmux_name, claude_cmd)
+
+    # Update status and attach
+    db.update_status(session.id, "active")
+    click.echo(f"Attaching to tmux session: {tmux_name}")
+    exit_code = tmux.attach_session(tmux_name)
+
+    # After detach, try to capture Claude session ID
+    claude_session_id = claude.find_session_after_time(cwd, launch_time)
+    if claude_session_id:
+        db.update_claude_session_id(session.id, claude_session_id)
+        click.echo(f"Captured Claude session: {claude_session_id[:8]}...")
+
+    # Update status based on tmux state
+    session = db.get_session_by_id(session.id)
+    if session:
+        sync_session_status(db, session)
+
+
+@main.command("list")
+@click.option("--all", "include_all", is_flag=True, help="Include archived sessions")
+@click.option("--here", is_flag=True, help="Only show sessions for current directory")
+@click.option("--json", "json_mode", is_flag=True, help="Output as JSON")
+def list_cmd(include_all: bool = False, here: bool = False, json_mode: bool = False) -> None:
+    """List all sessions."""
+    db = SessionDB()
+    cwd = get_cwd() if here else None
+    sessions = db.list_sessions(include_archived=include_all, working_directory=cwd)
+
+    # Sync all session statuses
+    sessions = [sync_session_status(db, s) for s in sessions]
+
+    # JSON output mode
+    if json_mode:
+        output = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "working_directory": s.working_directory,
+                "status": s.status,
+                "claude_session_id": s.claude_session_id,
+                "last_activity": s.last_activity,
+            }
+            for s in sessions
+        ]
+        click.echo(json.dumps(output))
+        return
+
+    if not sessions:
+        click.echo("No sessions found.")
+        if not include_all:
+            click.echo("Use --all to include archived sessions.")
+        return
+
+    # Group by directory
+    by_dir: dict[str, list[Session]] = {}
+    for session in sessions:
+        if session.working_directory not in by_dir:
+            by_dir[session.working_directory] = []
+        by_dir[session.working_directory].append(session)
+
+    # Sort directories: current first, then alphabetically
+    current = get_cwd()
+    dirs = sorted(by_dir.keys(), key=lambda d: (d != current, d))
+
+    for directory in dirs:
+        dir_sessions = by_dir[directory]
+        # Shorten path for display
+        display_dir = directory.replace(str(Path.home()), "~")
+        is_current = directory == current
+
+        if is_current:
+            click.echo(click.style(f"\n{display_dir} (current)", fg="green", bold=True))
+        else:
+            click.echo(click.style(f"\n{display_dir}", fg="blue"))
+
+        for session in dir_sessions:
+            click.echo(format_session_line(session))
+
+
+@main.command("attach")
+@click.argument("name")
+@click.option("--safe", is_flag=True, help="Use safe mode if creating new session")
+def attach_cmd(name: str, safe: bool) -> None:
+    """Attach to an existing session."""
+    db = SessionDB()
+    config = Config.load()
+    cwd = get_cwd()
+
+    session = db.get_session(name, cwd)
+    if not session:
+        click.echo(f"Session '{name}' not found in current directory.", err=True)
+        click.echo("Use 'clux list --all' to see all sessions.", err=True)
+        sys.exit(1)
+
+    if session.status == "archived":
+        click.echo(f"Session '{name}' is archived. Use 'clux restore {name}' first.", err=True)
+        sys.exit(1)
+
+    # Sync status
+    session = sync_session_status(db, session)
+    launch_time = time.time()
+
+    if session.tmux_session and tmux.session_exists(session.tmux_session):
+        # Attach to existing tmux session
+        db.update_status(session.id, "active")
+        click.echo(f"Attaching to: {session.tmux_session}")
+        tmux.attach_session(session.tmux_session)
+    elif session.claude_session_id:
+        # Resume with --resume
+        click.echo(f"Resuming Claude session: {session.claude_session_id[:8]}...")
+        tmux_name = session.tmux_session or f"clux-{name}"
+
+        if not tmux.create_session(tmux_name, session.working_directory):
+            click.echo("Failed to create tmux session", err=True)
+            sys.exit(1)
+
+        claude_cmd = config.get_claude_command(safe=safe)
+        claude_cmd.extend(["--resume", session.claude_session_id])
+        tmux.send_keys(tmux_name, " ".join(claude_cmd))
+
+        db.update_status(session.id, "active")
+        tmux.attach_session(tmux_name)
+    else:
+        # No way to resume, start fresh
+        click.echo(f"No Claude session to resume. Starting fresh.")
+        tmux_name = session.tmux_session or f"clux-{name}"
+
+        if not tmux.create_session(tmux_name, session.working_directory):
+            click.echo("Failed to create tmux session", err=True)
+            sys.exit(1)
+
+        claude_cmd = " ".join(config.get_claude_command(safe=safe))
+        tmux.send_keys(tmux_name, claude_cmd)
+
+        db.update_status(session.id, "active")
+        tmux.attach_session(tmux_name)
+
+    # After detach, try to capture/update Claude session ID
+    session = db.get_session_by_id(session.id)
+    if session:
+        if not session.claude_session_id:
+            claude_session_id = claude.find_session_after_time(cwd, launch_time)
+            if claude_session_id:
+                db.update_claude_session_id(session.id, claude_session_id)
+        sync_session_status(db, session)
+
+
+@main.command("archive")
+@click.argument("name")
+def archive_cmd(name: str) -> None:
+    """Archive a session."""
+    db = SessionDB()
+    cwd = get_cwd()
+
+    session = db.get_session(name, cwd)
+    if not session:
+        click.echo(f"Session '{name}' not found.", err=True)
+        sys.exit(1)
+
+    # Kill tmux session if running
+    if session.tmux_session and tmux.session_exists(session.tmux_session):
+        tmux.kill_session(session.tmux_session)
+
+    db.update_status(session.id, "archived")
+    click.echo(f"Archived: {name}")
+
+
+@main.command("restore")
+@click.argument("name")
+def restore_cmd(name: str) -> None:
+    """Restore an archived session."""
+    db = SessionDB()
+    cwd = get_cwd()
+
+    session = db.get_session(name, cwd)
+    if not session:
+        click.echo(f"Session '{name}' not found.", err=True)
+        sys.exit(1)
+
+    if session.status != "archived":
+        click.echo(f"Session '{name}' is not archived.", err=True)
+        sys.exit(1)
+
+    db.restore_session(session.id)
+    click.echo(f"Restored: {name}")
+
+
+@main.command("delete")
+@click.argument("name")
+@click.option("--force", is_flag=True, help="Delete without confirmation")
+def delete_cmd(name: str, force: bool) -> None:
+    """Permanently delete a session."""
+    db = SessionDB()
+    cwd = get_cwd()
+
+    session = db.get_session(name, cwd)
+    if not session:
+        click.echo(f"Session '{name}' not found.", err=True)
+        sys.exit(1)
+
+    if not force:
+        if not click.confirm(f"Permanently delete session '{name}'?"):
+            return
+
+    # Kill tmux session if running
+    if session.tmux_session and tmux.session_exists(session.tmux_session):
+        tmux.kill_session(session.tmux_session)
+
+    db.delete_session(session.id)
+    click.echo(f"Deleted: {name}")
+
+
+@main.command("status")
+def status_cmd() -> None:
+    """Show status of current directory sessions."""
+    db = SessionDB()
+    cwd = get_cwd()
+
+    sessions = db.list_sessions(working_directory=cwd)
+    if not sessions:
+        click.echo("No sessions in current directory.")
+        return
+
+    # Check if we're inside a tmux session that matches one of ours
+    current_tmux = os.environ.get("TMUX_PANE", "")
+    # This is a simplified check - could be more robust
+
+    for session in sessions:
+        session = sync_session_status(db, session)
+        click.echo(format_session_line(session))
+
+
+# =============================================================================
+# Prompt command (non-interactive)
+# =============================================================================
+
+
+@main.command("prompt")
+@click.argument("name")
+@click.argument("message")
+@click.option("--dir", "directory", type=click.Path(exists=True), help="Working directory")
+@click.option("--json", "json_mode", is_flag=True, help="Output raw stream-json")
+@click.option("--timeout", default=900, help="Timeout in seconds")
+@click.option("--safe", is_flag=True, help="Disable YOLO mode")
+def prompt_cmd(
+    name: str, message: str, directory: str | None, json_mode: bool, timeout: int, safe: bool
+) -> None:
+    """Send a prompt to a session (non-interactive)."""
+    from .prompt import run_prompt
+
+    cwd = directory or get_cwd()
+    try:
+        result = run_prompt(name, message, cwd, json_mode=json_mode, safe=safe, timeout=timeout)
+        if result.error:
+            click.echo(f"Error: {result.error}", err=True)
+        sys.exit(result.exit_code)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+# =============================================================================
+# Single-letter aliases
+# =============================================================================
+
+
+@main.command("n", hidden=True)
+@click.argument("name")
+@click.option("--safe", is_flag=True)
+@click.pass_context
+def n_cmd(ctx: click.Context, name: str, safe: bool) -> None:
+    """Alias for 'new'."""
+    ctx.invoke(new_cmd, name=name, safe=safe)
+
+
+@main.command("a", hidden=True)
+@click.argument("name")
+@click.option("--safe", is_flag=True)
+@click.pass_context
+def a_cmd(ctx: click.Context, name: str, safe: bool) -> None:
+    """Alias for 'attach'."""
+    ctx.invoke(attach_cmd, name=name, safe=safe)
+
+
+@main.command("l", hidden=True)
+@click.option("--all", "include_all", is_flag=True)
+@click.option("--here", is_flag=True)
+@click.option("--json", "json_mode", is_flag=True)
+@click.pass_context
+def l_cmd(ctx: click.Context, include_all: bool, here: bool, json_mode: bool) -> None:
+    """Alias for 'list'."""
+    ctx.invoke(list_cmd, include_all=include_all, here=here, json_mode=json_mode)
+
+
+@main.command("d", hidden=True)
+@click.argument("name")
+@click.option("--force", is_flag=True)
+@click.pass_context
+def d_cmd(ctx: click.Context, name: str, force: bool) -> None:
+    """Alias for 'delete'."""
+    ctx.invoke(delete_cmd, name=name, force=force)
+
+
+@main.command("s", hidden=True)
+@click.pass_context
+def s_cmd(ctx: click.Context) -> None:
+    """Alias for 'status'."""
+    ctx.invoke(status_cmd)
+
+
+@main.command("p", hidden=True)
+@click.argument("name")
+@click.argument("message")
+@click.option("--dir", "directory", type=click.Path(exists=True))
+@click.option("--json", "json_mode", is_flag=True)
+@click.option("--timeout", default=900)
+@click.option("--safe", is_flag=True)
+@click.pass_context
+def p_cmd(
+    ctx: click.Context,
+    name: str,
+    message: str,
+    directory: str | None,
+    json_mode: bool,
+    timeout: int,
+    safe: bool,
+) -> None:
+    """Alias for 'prompt'."""
+    ctx.invoke(
+        prompt_cmd,
+        name=name,
+        message=message,
+        directory=directory,
+        json_mode=json_mode,
+        timeout=timeout,
+        safe=safe,
+    )
+
+
+if __name__ == "__main__":
+    main()
