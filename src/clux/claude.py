@@ -14,16 +14,15 @@ def path_to_project_dir_name(working_directory: str) -> str:
     """Convert a working directory path to Claude's project directory name.
 
     Claude uses a format like: -home-user-work-myproject
-    which is the path with slashes replaced by dashes.
+    which is the path with slashes and underscores replaced by dashes.
     """
     # Normalize the path
     path = Path(working_directory).resolve()
-    # Convert to string and replace / with -
-    # Remove leading slash, replace remaining slashes
+    # Convert to string and replace / and _ with -
     path_str = str(path)
     if path_str.startswith("/"):
         path_str = path_str[1:]
-    return "-" + path_str.replace("/", "-")
+    return "-" + path_str.replace("/", "-").replace("_", "-")
 
 
 def get_project_sessions_dir(working_directory: str) -> Path | None:

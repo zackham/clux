@@ -12,6 +12,7 @@ from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from ..db import Session, SessionDB, validate_session_name, make_tmux_name
+from .. import claude
 from .. import tmux
 from ..config import Config
 
@@ -178,6 +179,7 @@ class CluxApp(App):
         Binding("r", "refresh", "Refresh"),
         Binding("s", "toggle_archived", "Show Archived"),
         Binding("u", "unarchive", "Unarchive"),
+        Binding("k", "kill", "Kill"),
         Binding("tab", "next_directory", "Next Dir", show=False, priority=True),
         Binding("shift+tab", "prev_directory", "Prev Dir", show=False, priority=True),
     ]
@@ -321,6 +323,27 @@ class CluxApp(App):
             if new_status != session.status and session.status != "archived":
                 self.db.update_status(session.id, new_status)
                 session.status = new_status
+
+        # Detect Claude session ID if missing
+        if not session.claude_session_id:
+            self._try_capture_claude_id(session)
+
+    def _try_capture_claude_id(self, session: Session) -> None:
+        """Try to detect and store a Claude session ID from disk."""
+        from datetime import datetime, timezone
+
+        try:
+            created_dt = datetime.fromisoformat(session.created_at)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            created_ts = created_dt.timestamp()
+        except Exception:
+            return
+
+        claude_id = claude.find_session_after_time(session.working_directory, created_ts)
+        if claude_id:
+            self.db.update_claude_session_id(session.id, claude_id)
+            session.claude_session_id = claude_id
 
     def get_selected_session(self) -> Session | None:
         """Get the currently selected session."""
@@ -508,6 +531,22 @@ class CluxApp(App):
 
         self.db.update_status(session.id, "archived")
         self.notify(f"Archived: {session.name}")
+        self.refresh_sessions()
+
+    def action_kill(self) -> None:
+        """Kill the tmux session but keep the session record (becomes idle)."""
+        session = self.get_selected_session()
+        if not session:
+            self.notify("No session selected", severity="warning")
+            return
+
+        if not session.tmux_session or not tmux.session_exists(session.tmux_session):
+            self.notify("Session has no running tmux process", severity="warning")
+            return
+
+        tmux.kill_session(session.tmux_session)
+        self.db.update_status(session.id, "idle")
+        self.notify(f"Killed: {session.name}")
         self.refresh_sessions()
 
     def action_delete(self) -> None:

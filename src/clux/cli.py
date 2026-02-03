@@ -55,7 +55,29 @@ def sync_session_status(db: SessionDB, session: Session) -> Session:
             db.update_status(session.id, new_status)
             session.status = new_status
 
+    # Detect Claude session ID if missing
+    if not session.claude_session_id:
+        _try_capture_claude_id(db, session)
+
     return session
+
+
+def _try_capture_claude_id(db: SessionDB, session: Session) -> None:
+    """Try to detect and store a Claude session ID from disk."""
+    from datetime import datetime, timezone
+
+    try:
+        created_dt = datetime.fromisoformat(session.created_at)
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        created_ts = created_dt.timestamp()
+    except Exception:
+        return
+
+    claude_id = claude.find_session_after_time(session.working_directory, created_ts)
+    if claude_id:
+        db.update_claude_session_id(session.id, claude_id)
+        session.claude_session_id = claude_id
 
 
 @click.group(invoke_without_command=True)
@@ -302,6 +324,33 @@ def restore_cmd(name: str) -> None:
     click.echo(f"Restored: {name}")
 
 
+@main.command("kill")
+@click.argument("name")
+def kill_cmd(name: str) -> None:
+    """Kill a session's tmux process (keeps session resumable)."""
+    db = SessionDB()
+    cwd = get_cwd()
+
+    session = db.get_session(name, cwd)
+    if not session:
+        click.echo(f"Session '{name}' not found.", err=True)
+        sys.exit(1)
+
+    if not session.tmux_session or not tmux.session_exists(session.tmux_session):
+        click.echo(f"Session '{name}' has no running tmux process.", err=True)
+        sys.exit(1)
+
+    # Capture Claude session ID before killing if missing
+    if not session.claude_session_id:
+        _try_capture_claude_id(db, session)
+        if session.claude_session_id:
+            click.echo(f"Captured Claude session: {session.claude_session_id[:8]}...")
+
+    tmux.kill_session(session.tmux_session)
+    db.update_status(session.id, "idle")
+    click.echo(f"Killed: {name}")
+
+
 @main.command("delete")
 @click.argument("name")
 @click.option("--force", is_flag=True, help="Delete without confirmation")
@@ -407,6 +456,14 @@ def a_cmd(ctx: click.Context, name: str, safe: bool) -> None:
 def l_cmd(ctx: click.Context, include_all: bool, here: bool, json_mode: bool) -> None:
     """Alias for 'list'."""
     ctx.invoke(list_cmd, include_all=include_all, here=here, json_mode=json_mode)
+
+
+@main.command("k", hidden=True)
+@click.argument("name")
+@click.pass_context
+def k_cmd(ctx: click.Context, name: str) -> None:
+    """Alias for 'kill'."""
+    ctx.invoke(kill_cmd, name=name)
 
 
 @main.command("d", hidden=True)
