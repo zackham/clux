@@ -15,13 +15,18 @@ for automation, `clux list --json` and `clux prompt` let you build integrations 
 ## install
 
 ```bash
-git clone https://github.com/zackham/clux.git
-cd clux
-uv sync
-ln -sf $(pwd)/.venv/bin/clux ~/.local/bin/clux
+curl -fsSL https://raw.githubusercontent.com/zackham/clux/master/install.sh | bash
 ```
 
-requires: python 3.12+, tmux, claude cli
+or install directly with uv/pipx:
+
+```bash
+uv tool install git+https://github.com/zackham/clux.git
+# or
+pipx install git+https://github.com/zackham/clux.git
+```
+
+requires: python 3.12+, tmux, [claude cli](https://docs.anthropic.com/en/docs/claude-code)
 
 ## quick start
 
