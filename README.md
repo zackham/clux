@@ -25,7 +25,7 @@ clux close api            # archive + kill in one step
 
 Sessions are scoped to directories — "api" in `~/work/foo` and "api" in `~/work/bar` are separate. Context is preserved across detach, terminal close, and reboot via `claude --resume`.
 
-### Tmux menu (`Ctrl-B J`)
+### Tmux menu (`Ctrl-b j`)
 
 From inside any clux session:
 
@@ -33,7 +33,7 @@ From inside any clux session:
 - **Next Session** — switch to the next session in the same project
 - **Open clux** — launch the TUI as a popup overlay
 
-Injected automatically. No tmux config needed. `J` is unbound in default tmux.
+Injected automatically. No tmux config needed. `j` is unbound in default tmux.
 
 ### TUI keybindings
 
