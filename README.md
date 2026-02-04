@@ -2,9 +2,7 @@
 
 Claude Code session manager. fast switching between projects, with full context restored.
 
-<video src="https://github.com/zackham/clux/raw/refs/heads/master/assets/demo.mp4" width="100%" autoplay loop muted playsinline></video>
-
-![clux TUI](assets/screenshot.png)
+![clux demo](assets/demo.gif)
 
 ## install
 
