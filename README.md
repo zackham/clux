@@ -1,20 +1,20 @@
 # clux
 
-Claude Code session manager. fast switching between projects, with full context restored.
+Session manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Named sessions, fast switching, full context restored — even after terminal death.
 
 ![clux demo](assets/demo.gif)
 
-## install
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zackham/clux/master/install.sh | bash
 ```
 
-or directly: `uv tool install git+https://github.com/zackham/clux.git`
+Or directly: `uv tool install git+https://github.com/zackham/clux.git`
 
-requires: python 3.12+, tmux, [claude cli](https://docs.anthropic.com/en/docs/claude-code)
+Requires: Python 3.12+, tmux, [Claude CLI](https://docs.anthropic.com/en/docs/claude-code)
 
-## usage
+## Usage
 
 ```bash
 clux                      # open TUI
@@ -23,23 +23,23 @@ clux attach api           # resume (survives terminal death)
 clux close api            # archive + kill in one step
 ```
 
-sessions are scoped to directories — "api" in `~/work/foo` and "api" in `~/work/bar` are separate. context is preserved across detach, terminal close, and reboot via `claude --resume`.
+Sessions are scoped to directories — "api" in `~/work/foo` and "api" in `~/work/bar` are separate. Context is preserved across detach, terminal close, and reboot via `claude --resume`.
 
-### tmux menu (`ctrl-b j`)
+### Tmux menu (`Ctrl-B J`)
 
-from inside any clux session:
+From inside any clux session:
 
 - **Archive & Close** — archive the session and kill tmux
 - **Next Session** — switch to the next session in the same project
-- **Open clux** — open the TUI as a popup overlay
+- **Open clux** — launch the TUI as a popup overlay
 
-injected automatically. no tmux config needed. `j` is unbound in default tmux.
+Injected automatically. No tmux config needed. `J` is unbound in default tmux.
 
 ### TUI keybindings
 
 `n` new · `enter`/`o` open · `a` archive · `d` delete · `k` kill · `s` show archived · `q` quit
 
-## API
+## Programmatic API
 
 ```bash
 clux list --json                          # all sessions as JSON
@@ -48,9 +48,9 @@ clux prompt api "deploy" --dir ~/work/api # target a specific directory
 clux prompt api "status" --json           # raw NDJSON (cost, tool use, session ID)
 ```
 
-`clux prompt` returns exit code 0 on success and streams to stdout — built for scripting, bots, and CI.
+`clux prompt` streams NDJSON events (text, tool use, cost) in real-time to stdout — built for scripting, bots, and CI.
 
-## config
+## Config
 
 `~/.config/clux/config.toml`:
 
@@ -59,6 +59,6 @@ yolo_mode = true          # --dangerously-skip-permissions by default
 claude_command = "claude" # custom binary path
 ```
 
-## license
+## License
 
 MIT
