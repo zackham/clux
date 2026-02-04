@@ -121,6 +121,8 @@ def create_session(name: str, working_directory: str) -> bool:
             logger.error(f"Failed to create tmux session '{name}': {result.stderr}")
             return False
         logger.debug(f"Created tmux session: {name}")
+        # Inject clux menu keybinding (idempotent)
+        inject_clux_menu()
         return True
     except Exception as e:
         logger.error(f"Exception creating tmux session: {e}")
@@ -193,6 +195,68 @@ def get_pane_content(session_name: str, lines: int = 50) -> str:
     except Exception as e:
         logger.error(f"Exception capturing pane content: {e}")
         return ""
+
+
+def switch_client(target_session: str) -> bool:
+    """Switch the current tmux client to a different session."""
+    try:
+        result = subprocess.run(
+            ["tmux", "switch-client", "-t", target_session],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error(f"Failed to switch client to '{target_session}': {result.stderr}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Exception switching client: {e}")
+        return False
+
+
+def display_message(msg: str) -> None:
+    """Show a message in the tmux status line."""
+    try:
+        subprocess.run(
+            ["tmux", "display-message", msg],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        pass
+
+
+def inject_clux_menu() -> bool:
+    """Inject the clux menu keybinding (prefix + j) into the tmux server.
+
+    This is idempotent - safe to call multiple times.
+    Binds prefix+j to a display-menu with options to archive, switch sessions,
+    or open the TUI. The key 'j' is unbound in default tmux.
+    """
+    try:
+        env = os.environ.copy()
+        env.pop("TMUX", None)
+
+        result = subprocess.run(
+            [
+                "tmux", "bind-key", "j",
+                "display-menu", "-T", "#[align=centre] clux ", "-x", "C", "-y", "C",
+                "Archive & Close", "a", 'run-shell "clux close --tmux-name #{session_name}"',
+                "Next Session", "n", 'run-shell "clux next --tmux-name #{session_name}"',
+                "Open clux", "c", "display-popup -w 80% -h 80% -E clux",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            logger.warning(f"Failed to inject clux menu: {result.stderr}")
+            return False
+        logger.debug("Injected clux menu keybinding (prefix + j)")
+        return True
+    except Exception as e:
+        logger.error(f"Exception injecting clux menu: {e}")
+        return False
 
 
 def cleanup_orphaned_sessions(prefix: str = "clux-") -> list[str]:

@@ -351,6 +351,119 @@ def kill_cmd(name: str) -> None:
     click.echo(f"Killed: {name}")
 
 
+@main.command("close")
+@click.argument("name", required=False)
+@click.option("--tmux-name", help="Look up session by tmux session name (used by menu)")
+def close_cmd(name: str | None, tmux_name: str | None) -> None:
+    """Archive a session and kill its tmux (one-step cleanup).
+
+    Can be called by name (from current directory) or by --tmux-name
+    (used by the prefix+X tmux menu).
+    """
+    db = SessionDB()
+
+    if tmux_name:
+        # Look up by tmux session name (from menu keybinding)
+        if not tmux_name.startswith("clux-"):
+            click.echo("Not a clux session.", err=True)
+            sys.exit(1)
+        session = db.get_session_by_tmux_name(tmux_name)
+    elif name:
+        cwd = get_cwd()
+        session = db.get_session(name, cwd)
+    else:
+        click.echo("Provide a session name or --tmux-name.", err=True)
+        sys.exit(1)
+
+    if not session:
+        click.echo("Session not found.", err=True)
+        sys.exit(1)
+
+    # Capture Claude session ID before killing
+    if not session.claude_session_id:
+        _try_capture_claude_id(db, session)
+
+    # Kill tmux session if running
+    if session.tmux_session and tmux.session_exists(session.tmux_session):
+        tmux.kill_session(session.tmux_session)
+
+    # Archive
+    db.update_status(session.id, "archived")
+    click.echo(f"Archived and closed: {session.name}")
+
+
+@main.command("next")
+@click.option("--tmux-name", help="Current tmux session name (used by menu)")
+def next_cmd(tmux_name: str | None) -> None:
+    """Switch to the next session in the same project."""
+    db = SessionDB()
+    config = Config.load()
+
+    # Find current session
+    if tmux_name:
+        if not tmux_name.startswith("clux-"):
+            tmux.display_message("Not a clux session")
+            return
+        session = db.get_session_by_tmux_name(tmux_name)
+    else:
+        # Try to detect from environment
+        tmux.display_message("Use --tmux-name or run from the clux menu")
+        return
+
+    if not session:
+        tmux.display_message("Session not found")
+        return
+
+    # Get all non-archived sessions in same directory
+    sessions = db.list_sessions(working_directory=session.working_directory)
+
+    if len(sessions) <= 1:
+        tmux.display_message("No other sessions in this project")
+        return
+
+    # Find current session index
+    current_idx = None
+    for i, s in enumerate(sessions):
+        if s.id == session.id:
+            current_idx = i
+            break
+
+    if current_idx is None:
+        tmux.display_message("Current session not found in list")
+        return
+
+    # Get next session (wrap around)
+    next_idx = (current_idx + 1) % len(sessions)
+    next_session = sessions[next_idx]
+
+    # Ensure next session has a running tmux
+    next_tmux = next_session.tmux_session or make_tmux_name(
+        next_session.name, next_session.working_directory
+    )
+
+    if not tmux.session_exists(next_tmux):
+        # Create tmux session and launch Claude
+        if not tmux.create_session(next_tmux, next_session.working_directory):
+            tmux.display_message("Failed to create tmux session")
+            return
+
+        if next_session.claude_session_id:
+            claude_cmd = config.get_claude_command()
+            claude_cmd.extend(["--resume", next_session.claude_session_id])
+            tmux.send_keys(next_tmux, " ".join(claude_cmd))
+        else:
+            claude_cmd = " ".join(config.get_claude_command())
+            tmux.send_keys(next_tmux, claude_cmd)
+
+        db.update_status(next_session.id, "active")
+
+    # Switch to the next session
+    if tmux.switch_client(next_tmux):
+        tmux.display_message(f"Switched to: {next_session.name}")
+    else:
+        tmux.display_message(f"Failed to switch to: {next_session.name}")
+
+
 @main.command("delete")
 @click.argument("name")
 @click.option("--force", is_flag=True, help="Delete without confirmation")
@@ -480,6 +593,15 @@ def d_cmd(ctx: click.Context, name: str, force: bool) -> None:
 def s_cmd(ctx: click.Context) -> None:
     """Alias for 'status'."""
     ctx.invoke(status_cmd)
+
+
+@main.command("x", hidden=True)
+@click.argument("name", required=False)
+@click.option("--tmux-name")
+@click.pass_context
+def x_cmd(ctx: click.Context, name: str | None, tmux_name: str | None) -> None:
+    """Alias for 'close'."""
+    ctx.invoke(close_cmd, name=name, tmux_name=tmux_name)
 
 
 @main.command("p", hidden=True)

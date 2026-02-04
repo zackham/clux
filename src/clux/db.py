@@ -219,6 +219,21 @@ class SessionDB:
             logger.error(f"Failed to get session by ID: {e}")
             raise DatabaseError(f"Failed to get session: {e}") from e
 
+    def get_session_by_tmux_name(self, tmux_session: str) -> Session | None:
+        """Get a session by its tmux session name."""
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE tmux_session = ?",
+                    (tmux_session,),
+                ).fetchone()
+                if row:
+                    return self._row_to_session(row)
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get session by tmux name: {e}")
+            raise DatabaseError(f"Failed to get session: {e}") from e
+
     def list_sessions(
         self,
         include_archived: bool = False,

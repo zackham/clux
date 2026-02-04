@@ -29,9 +29,21 @@ requires: python 3.12+, tmux, claude cli
 clux                      # TUI - browse and switch sessions
 clux new api              # create session in current directory
 clux attach api           # resume session (survives terminal death)
+clux close api            # archive + kill tmux in one step
+clux next                 # switch to next session in same project
 ```
 
-keybindings: `n` new, `enter` attach, `a` archive, `d` delete, `q` quit
+TUI keybindings: `n` new, `enter` attach, `a` archive, `d` delete, `q` quit
+
+### tmux menu
+
+inside any clux session, press `ctrl-b j` to open the clux menu:
+
+- **Archive & Close** — archive the session and kill tmux in one step
+- **Next Session** — switch to the next session in the same project
+- **Open clux** — open the TUI as a popup overlay
+
+the keybinding is injected automatically when sessions are created. no tmux config needed. `j` is unbound in default tmux.
 
 ## API for integrations
 
