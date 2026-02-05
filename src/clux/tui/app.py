@@ -69,13 +69,20 @@ class NewSessionModal(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel"),
     ]
 
+    def __init__(self, working_directory: str | None = None) -> None:
+        super().__init__()
+        self.working_directory = working_directory
+
     def compose(self) -> ComposeResult:
-        yield Container(
-            Label("New Session", id="modal-title"),
+        widgets = [Label("New Session", id="modal-title")]
+        if self.working_directory:
+            display = self.working_directory.replace(str(Path.home()), "~")
+            widgets.append(Label(f"[dim]{display}[/]"))
+        widgets.extend([
             Input(placeholder="Session name", id="session-name"),
             Label("[dim]Press Enter to create, Escape to cancel[/]"),
-            id="new-session-modal",
-        )
+        ])
+        yield Container(*widgets, id="new-session-modal")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -143,8 +150,8 @@ class CluxApp(App):
 
     #new-session-modal {
         align: center middle;
-        width: 50;
-        height: 10;
+        width: 60;
+        height: 12;
         border: solid green;
         background: $surface;
         padding: 1 2;
@@ -272,7 +279,7 @@ class CluxApp(App):
             else:
                 label = f"[blue]{display}[/]"
 
-            dir_node = tree.root.add(label, expand=True)
+            dir_node = tree.root.add(label, expand=True, data=f"dir:{directory}")
             self.dir_nodes.append(dir_node)
 
             for session in by_dir[directory]:
@@ -349,9 +356,24 @@ class CluxApp(App):
         """Get the currently selected session."""
         tree: Tree = self.query_one(Tree)
         node = tree.cursor_node
-        if node and node.data:
+        if node and node.data and not str(node.data).startswith("dir:"):
             # node.data contains the session_key
             return self.session_map.get(node.data)
+        return None
+
+    def get_selected_directory(self) -> str | None:
+        """Get the working directory for the currently selected node."""
+        tree: Tree = self.query_one(Tree)
+        node = tree.cursor_node
+        if not node:
+            return None
+        # Directory node
+        if node.data and str(node.data).startswith("dir:"):
+            return str(node.data)[4:]
+        # Session node - get directory from session
+        if node.data:
+            session = self.session_map.get(node.data)
+            return session.working_directory if session else None
         return None
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -365,10 +387,26 @@ class CluxApp(App):
         self._update_preview(session_key)
 
     def _update_preview(self, session_key: str | None) -> None:
-        """Update the preview pane for a session."""
-        session = self.session_map.get(session_key) if session_key else None
+        """Update the preview pane for a session or directory."""
         preview = self.query_one(TmuxPreview)
         header = self.query_one("#preview-header", Static)
+
+        # Directory node
+        if session_key and str(session_key).startswith("dir:"):
+            directory = str(session_key)[4:]
+            display = directory.replace(str(Path.home()), "~")
+            header.update(f" {display}")
+            sessions_in_dir = [s for s in self.sessions if s.working_directory == directory]
+            active = sum(1 for s in sessions_in_dir if s.status in ("active", "detached"))
+            preview.content = (
+                f"[cyan]{display}[/]\n\n"
+                f"{len(sessions_in_dir)} session(s)"
+                + (f", {active} active" if active else "")
+                + "\n\n[dim]Press 'n' to create a new session here[/]"
+            )
+            return
+
+        session = self.session_map.get(session_key) if session_key else None
 
         if session:
             header.update(f" {session.name} [{session.status}]")
@@ -445,34 +483,38 @@ class CluxApp(App):
                     return
 
     def action_new_session(self) -> None:
-        """Create a new session."""
+        """Create a new session in the selected directory."""
+        working_dir = self.get_selected_directory() or self.cwd
+
         def on_result(name: str | None) -> None:
             if name:
-                self.create_session(name)
+                self.create_session(name, working_dir)
 
-        self.push_screen(NewSessionModal(), on_result)
+        self.push_screen(NewSessionModal(working_directory=working_dir), on_result)
 
-    def create_session(self, name: str) -> None:
+    def create_session(self, name: str, working_directory: str | None = None) -> None:
         """Create and attach to a new session."""
+        wd = working_directory or self.cwd
+
         # Validate name
         is_valid, error = validate_session_name(name)
         if not is_valid:
             self.notify(f"Invalid name: {error}", severity="error")
             return
 
-        existing = self.db.get_session(name, self.cwd)
+        existing = self.db.get_session(name, wd)
         if existing:
             self.notify(f"Session '{name}' already exists", severity="error")
             return
 
-        tmux_name = make_tmux_name(name, self.cwd)
+        tmux_name = make_tmux_name(name, wd)
 
         if tmux.session_exists(tmux_name):
             tmux.kill_session(tmux_name)
 
-        session = self.db.create_session(name, self.cwd, tmux_name)
+        session = self.db.create_session(name, wd, tmux_name)
 
-        if not tmux.create_session(tmux_name, self.cwd):
+        if not tmux.create_session(tmux_name, wd):
             self.notify("Failed to create tmux session", severity="error")
             self.db.delete_session(session.id)
             return

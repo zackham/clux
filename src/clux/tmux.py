@@ -241,6 +241,7 @@ def inject_clux_menu() -> bool:
             [
                 "tmux", "bind-key", "j",
                 "display-menu", "-T", "#[align=centre] clux ", "-x", "C", "-y", "C",
+                "New Session", "N", "display-popup -w 50 -h 3 -E \"read -p 'Session name: ' name && clux new-here \\\"$name\\\" --tmux-name #{session_name}\"",
                 "Archive & Close", "a", 'run-shell "clux close --tmux-name #{session_name}"',
                 "Next Session", "n", 'run-shell "clux next --tmux-name #{session_name}"',
                 "Open clux", "c", "display-popup -w 80% -h 80% -E clux",

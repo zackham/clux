@@ -29,6 +29,7 @@ Sessions are scoped to directories — "api" in `~/work/foo` and "api" in `~/wor
 
 From inside any clux session:
 
+- **New Session** — create a new session in the same project
 - **Archive & Close** — archive the session and kill tmux
 - **Next Session** — switch to the next session in the same project
 - **Open clux** — launch the TUI as a popup overlay
@@ -37,7 +38,7 @@ Injected automatically. No tmux config needed. `j` is unbound in default tmux.
 
 ### TUI keybindings
 
-`n` new · `enter`/`o` open · `a` archive · `d` delete · `k` kill · `s` show archived · `q` quit
+`n` new (in selected directory) · `enter`/`o` open · `a` archive · `d` delete · `k` kill · `s` show archived · `tab`/`shift+tab` jump directories · `q` quit
 
 ## Programmatic API
 

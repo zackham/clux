@@ -392,6 +392,63 @@ def close_cmd(name: str | None, tmux_name: str | None) -> None:
     click.echo(f"Archived and closed: {session.name}")
 
 
+@main.command("new-here")
+@click.argument("name")
+@click.option("--tmux-name", required=True, help="Current tmux session name (used by menu)")
+@click.option("--safe", is_flag=True, help="Disable YOLO mode for this session")
+def new_here_cmd(name: str, tmux_name: str, safe: bool) -> None:
+    """Create a new session in the same directory as the current session."""
+    db = SessionDB()
+    config = Config.load()
+
+    if not tmux_name.startswith("clux-"):
+        tmux.display_message("Not a clux session")
+        return
+
+    session = db.get_session_by_tmux_name(tmux_name)
+    if not session:
+        tmux.display_message("Session not found")
+        return
+
+    working_dir = session.working_directory
+
+    # Validate name
+    is_valid, error = validate_session_name(name)
+    if not is_valid:
+        tmux.display_message(f"Invalid name: {error}")
+        return
+
+    # Check if session already exists
+    existing = db.get_session(name, working_dir)
+    if existing:
+        tmux.display_message(f"Session '{name}' already exists")
+        return
+
+    # Create new session
+    new_tmux_name = make_tmux_name(name, working_dir)
+
+    if tmux.session_exists(new_tmux_name):
+        tmux.kill_session(new_tmux_name)
+
+    new_session = db.create_session(name, working_dir, new_tmux_name)
+
+    if not tmux.create_session(new_tmux_name, working_dir):
+        tmux.display_message("Failed to create tmux session")
+        db.delete_session(new_session.id)
+        return
+
+    claude_cmd = " ".join(config.get_claude_command(safe=safe))
+    tmux.send_keys(new_tmux_name, claude_cmd)
+
+    db.update_status(new_session.id, "active")
+
+    # Switch to the new session
+    if tmux.switch_client(new_tmux_name):
+        tmux.display_message(f"New session: {name}")
+    else:
+        tmux.display_message(f"Created but failed to switch: {name}")
+
+
 @main.command("next")
 @click.option("--tmux-name", help="Current tmux session name (used by menu)")
 def next_cmd(tmux_name: str | None) -> None:
