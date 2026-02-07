@@ -1,6 +1,7 @@
 """Textual TUI application for clux."""
 
 import subprocess
+import uuid
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -12,7 +13,6 @@ from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from ..db import Session, SessionDB, validate_session_name, make_tmux_name
-from .. import claude
 from .. import tmux
 from ..config import Config
 
@@ -331,27 +331,6 @@ class CluxApp(App):
                 self.db.update_status(session.id, new_status)
                 session.status = new_status
 
-        # Detect Claude session ID if missing
-        if not session.claude_session_id:
-            self._try_capture_claude_id(session)
-
-    def _try_capture_claude_id(self, session: Session) -> None:
-        """Try to detect and store a Claude session ID from disk."""
-        from datetime import datetime, timezone
-
-        try:
-            created_dt = datetime.fromisoformat(session.created_at)
-            if created_dt.tzinfo is None:
-                created_dt = created_dt.replace(tzinfo=timezone.utc)
-            created_ts = created_dt.timestamp()
-        except Exception:
-            return
-
-        claude_id = claude.find_session_after_time(session.working_directory, created_ts)
-        if claude_id:
-            self.db.update_claude_session_id(session.id, claude_id)
-            session.claude_session_id = claude_id
-
     def get_selected_session(self) -> Session | None:
         """Get the currently selected session."""
         tree: Tree = self.query_one(Tree)
@@ -519,7 +498,9 @@ class CluxApp(App):
             self.db.delete_session(session.id)
             return
 
-        claude_cmd = " ".join(self.config.get_claude_command())
+        claude_session_id = str(uuid.uuid4())
+        self.db.update_claude_session_id(session.id, claude_session_id)
+        claude_cmd = " ".join(self.config.get_claude_command(session_id=claude_session_id))
         tmux.send_keys(tmux_name, claude_cmd)
 
         self.db.update_status(session.id, "active")
@@ -542,20 +523,24 @@ class CluxApp(App):
                 self.notify("Failed to create tmux session", severity="error")
                 return
 
-            claude_cmd = self.config.get_claude_command()
-            claude_cmd.extend(["--resume", session.claude_session_id])
-            tmux.send_keys(tmux_name, " ".join(claude_cmd))
+            claude_cmd = " ".join(self.config.get_claude_command(
+                session_id=session.claude_session_id, resume=True,
+            ))
+            tmux.send_keys(tmux_name, claude_cmd)
 
             self.db.update_status(session.id, "active")
             self.exit(result=("attach", tmux_name))
         else:
+            claude_session_id = str(uuid.uuid4())
+            self.db.update_claude_session_id(session.id, claude_session_id)
+
             tmux_name = session.tmux_session or make_tmux_name(session.name, session.working_directory)
 
             if not tmux.create_session(tmux_name, session.working_directory):
                 self.notify("Failed to create tmux session", severity="error")
                 return
 
-            claude_cmd = " ".join(self.config.get_claude_command())
+            claude_cmd = " ".join(self.config.get_claude_command(session_id=claude_session_id))
             tmux.send_keys(tmux_name, claude_cmd)
 
             self.db.update_status(session.id, "active")

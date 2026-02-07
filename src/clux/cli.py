@@ -3,12 +3,11 @@
 import json
 import os
 import sys
-import time
+import uuid
 from pathlib import Path
 
 import click
 
-from . import claude
 from . import tmux
 from .config import Config
 from .db import Session, SessionDB, validate_session_name, make_tmux_name
@@ -55,29 +54,7 @@ def sync_session_status(db: SessionDB, session: Session) -> Session:
             db.update_status(session.id, new_status)
             session.status = new_status
 
-    # Detect Claude session ID if missing
-    if not session.claude_session_id:
-        _try_capture_claude_id(db, session)
-
     return session
-
-
-def _try_capture_claude_id(db: SessionDB, session: Session) -> None:
-    """Try to detect and store a Claude session ID from disk."""
-    from datetime import datetime, timezone
-
-    try:
-        created_dt = datetime.fromisoformat(session.created_at)
-        if created_dt.tzinfo is None:
-            created_dt = created_dt.replace(tzinfo=timezone.utc)
-        created_ts = created_dt.timestamp()
-    except Exception:
-        return
-
-    claude_id = claude.find_session_after_time(session.working_directory, created_ts)
-    if claude_id:
-        db.update_claude_session_id(session.id, claude_id)
-        session.claude_session_id = claude_id
 
 
 @click.group(invoke_without_command=True)
@@ -131,23 +108,14 @@ def new_cmd(name: str, safe: bool) -> None:
         db.delete_session(session.id)
         sys.exit(1)
 
-    # Record time before launching Claude (for session detection)
-    launch_time = time.time()
-
-    # Send claude command
-    claude_cmd = " ".join(config.get_claude_command(safe=safe))
+    # Generate Claude session ID upfront and pass it to Claude
+    claude_session_id = str(uuid.uuid4())
+    db.update_claude_session_id(session.id, claude_session_id)
+    claude_cmd = " ".join(config.get_claude_command(safe=safe, session_id=claude_session_id))
     tmux.send_keys(tmux_name, claude_cmd)
 
-    # Update status and attach
     db.update_status(session.id, "active")
-    click.echo(f"Attaching to tmux session: {tmux_name}")
-    exit_code = tmux.attach_session(tmux_name)
-
-    # After detach, try to capture Claude session ID
-    claude_session_id = claude.find_session_after_time(cwd, launch_time)
-    if claude_session_id:
-        db.update_claude_session_id(session.id, claude_session_id)
-        click.echo(f"Captured Claude session: {claude_session_id[:8]}...")
+    tmux.attach_session(tmux_name)
 
     # Update status based on tmux state
     session = db.get_session_by_id(session.id)
@@ -237,50 +205,46 @@ def attach_cmd(name: str, safe: bool) -> None:
 
     # Sync status
     session = sync_session_status(db, session)
-    launch_time = time.time()
 
     if session.tmux_session and tmux.session_exists(session.tmux_session):
-        # Attach to existing tmux session
         db.update_status(session.id, "active")
-        click.echo(f"Attaching to: {session.tmux_session}")
         tmux.attach_session(session.tmux_session)
     elif session.claude_session_id:
-        # Resume with --resume
-        click.echo(f"Resuming Claude session: {session.claude_session_id[:8]}...")
         tmux_name = session.tmux_session or make_tmux_name(name, session.working_directory)
 
         if not tmux.create_session(tmux_name, session.working_directory):
             click.echo("Failed to create tmux session", err=True)
             sys.exit(1)
 
-        claude_cmd = config.get_claude_command(safe=safe)
-        claude_cmd.extend(["--resume", session.claude_session_id])
-        tmux.send_keys(tmux_name, " ".join(claude_cmd))
+        claude_cmd = " ".join(config.get_claude_command(
+            safe=safe, session_id=session.claude_session_id, resume=True,
+        ))
+        tmux.send_keys(tmux_name, claude_cmd)
 
         db.update_status(session.id, "active")
         tmux.attach_session(tmux_name)
     else:
-        # No way to resume, start fresh
-        click.echo(f"No Claude session to resume. Starting fresh.")
+        # No Claude session ID — generate one and start fresh
+        claude_session_id = str(uuid.uuid4())
+        db.update_claude_session_id(session.id, claude_session_id)
+
         tmux_name = session.tmux_session or make_tmux_name(name, session.working_directory)
 
         if not tmux.create_session(tmux_name, session.working_directory):
             click.echo("Failed to create tmux session", err=True)
             sys.exit(1)
 
-        claude_cmd = " ".join(config.get_claude_command(safe=safe))
+        claude_cmd = " ".join(config.get_claude_command(
+            safe=safe, session_id=claude_session_id,
+        ))
         tmux.send_keys(tmux_name, claude_cmd)
 
         db.update_status(session.id, "active")
         tmux.attach_session(tmux_name)
 
-    # After detach, try to capture/update Claude session ID
+    # Update status based on tmux state
     session = db.get_session_by_id(session.id)
     if session:
-        if not session.claude_session_id:
-            claude_session_id = claude.find_session_after_time(cwd, launch_time)
-            if claude_session_id:
-                db.update_claude_session_id(session.id, claude_session_id)
         sync_session_status(db, session)
 
 
@@ -340,12 +304,6 @@ def kill_cmd(name: str) -> None:
         click.echo(f"Session '{name}' has no running tmux process.", err=True)
         sys.exit(1)
 
-    # Capture Claude session ID before killing if missing
-    if not session.claude_session_id:
-        _try_capture_claude_id(db, session)
-        if session.claude_session_id:
-            click.echo(f"Captured Claude session: {session.claude_session_id[:8]}...")
-
     tmux.kill_session(session.tmux_session)
     db.update_status(session.id, "idle")
     click.echo(f"Killed: {name}")
@@ -378,10 +336,6 @@ def close_cmd(name: str | None, tmux_name: str | None) -> None:
     if not session:
         click.echo("Session not found.", err=True)
         sys.exit(1)
-
-    # Capture Claude session ID before killing
-    if not session.claude_session_id:
-        _try_capture_claude_id(db, session)
 
     # Kill tmux session if running
     if session.tmux_session and tmux.session_exists(session.tmux_session):
@@ -437,7 +391,9 @@ def new_here_cmd(name: str, tmux_name: str, safe: bool) -> None:
         db.delete_session(new_session.id)
         return
 
-    claude_cmd = " ".join(config.get_claude_command(safe=safe))
+    claude_session_id = str(uuid.uuid4())
+    db.update_claude_session_id(new_session.id, claude_session_id)
+    claude_cmd = " ".join(config.get_claude_command(safe=safe, session_id=claude_session_id))
     tmux.send_keys(new_tmux_name, claude_cmd)
 
     db.update_status(new_session.id, "active")
@@ -505,11 +461,14 @@ def next_cmd(tmux_name: str | None) -> None:
             return
 
         if next_session.claude_session_id:
-            claude_cmd = config.get_claude_command()
-            claude_cmd.extend(["--resume", next_session.claude_session_id])
-            tmux.send_keys(next_tmux, " ".join(claude_cmd))
+            claude_cmd = " ".join(config.get_claude_command(
+                session_id=next_session.claude_session_id, resume=True,
+            ))
+            tmux.send_keys(next_tmux, claude_cmd)
         else:
-            claude_cmd = " ".join(config.get_claude_command())
+            claude_session_id = str(uuid.uuid4())
+            db.update_claude_session_id(next_session.id, claude_session_id)
+            claude_cmd = " ".join(config.get_claude_command(session_id=claude_session_id))
             tmux.send_keys(next_tmux, claude_cmd)
 
         db.update_status(next_session.id, "active")

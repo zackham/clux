@@ -53,9 +53,16 @@ class Config:
         with open(config_path, "wb") as f:
             tomli_w.dump(data, f)
 
-    def get_claude_command(self, safe: bool = False) -> list[str]:
+    def get_claude_command(
+        self, safe: bool = False, session_id: str | None = None, resume: bool = False,
+    ) -> list[str]:
         """Get the claude command with appropriate flags."""
         cmd = [self.claude_command]
         if self.yolo_mode and not safe:
             cmd.append("--dangerously-skip-permissions")
+        if session_id:
+            if resume:
+                cmd.extend(["--resume", session_id])
+            else:
+                cmd.extend(["--session-id", session_id])
         return cmd
